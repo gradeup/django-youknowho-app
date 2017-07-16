@@ -1,8 +1,17 @@
+import json
+import requests
+
+from collections import OrderedDict
+
+from django.conf import settings
+from django.forms import formset_factory
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.generic import ListView
 
+from .forms import RuleConditionKeysForm, RuleTagForm
 from .models import Rule
+
 
 class RulesList(ListView):
 
@@ -80,3 +89,81 @@ class RulesList(ListView):
 
         output_json['rules'] = rules_arr
         return JsonResponse(output_json)
+
+
+class RulesSimulate(ListView):
+
+    template_name = 'simulation.html'
+    condition_form = RuleConditionKeysForm
+    tag_form = RuleTagForm
+
+    def get(self, request, *args, **kwargs):
+        RuleConditionKeysFormSet = formset_factory(self.condition_form_class)
+        formset = self.condition_form(request.GET or None)
+        tag_form = self.tag_form(request.GET or None)
+        rEInput = {}
+        requestInfo = {}
+        actionInfo = {}
+        rules_response = []
+        rule_condition_map = {}
+        formset_length = 0
+        rETag = None
+        if tag_form.is_valid():
+            rETag = tag_form.cleaned_data.get('tag', None)
+
+        if formset.is_valid():
+            for form in formset:
+                condition_key = form.cleaned_data.get('condition_key')
+                condition_value = form.cleaned_data.get('condition_value')
+                if not condition_key:
+                    continue
+                condition_key = condition_key.name
+                rEInput[condition_key] = condition_value
+
+            post_data = {
+                'input': rEInput,
+            }
+            headers = {
+                'Content-Type': 'application/json',
+                'X-Client-Id': settings.RULE_ENGINE_X_CLIENT_ID,
+            }
+            if rETag:
+                post_data['tag'] = rETag
+            url = settings.RULE_ENGINE_SIMULATION_URL + settings.RULE_ENGINE_SIMULATION_API_ENDPOINT
+            try:
+                response = requests.get(url, data=json.dumps(post_data), headers=headers, timeout=10)
+            except Exception as e:
+                print 'Failed to request rule engine for simulation {}'.format(e)
+                response = None
+
+            if response and response.status_code == 200:
+                parsed_response = json.loads(response.text)
+                rules_map = parsed_response.get('meta', {}).get('rules', {})
+                requestInfo = json.dumps(parsed_response.get('requestInfo', {}), indent=4)
+                actionInfo = json.dumps(parsed_response.get('actionInfo', {}), indent=4)
+                # so that condition can be extracted only specific to these rules
+                rule_ids = rules_map.keys()
+                rules_response = [v for (k,v) in rules_map.items()]
+                # so that rules are displayed in order they were applied.
+                rules_response.sort(key=lambda x: x['exec_order'])
+                # for better template formatting,
+                rule_conditions = RuleCondition.objects.filter(rule__id__in=rule_ids)
+                for condition in rule_conditions:
+                    rule_condition_map[str(condition.id)] = {
+                        'id': condition.id,
+                        'key': condition.key.name,
+                        'condition': condition.condition,
+                        'operation': condition.operation,
+                        'value': condition.value
+                    }
+        # so that last form can be detected and plus sign can be displayed against it
+        formset_length = len(formset)
+        return render(request, self.template_name, {
+            'formset': formset,
+            'tag_form': tag_form,
+            'rules_response': rules_response,
+            'conditions_map': rule_condition_map,
+            'requestInfo': requestInfo,
+            'actionInfo': actionInfo,
+            'last_form_counter': formset_length
+        })

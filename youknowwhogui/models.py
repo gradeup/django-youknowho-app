@@ -45,6 +45,7 @@ class Rule(models.Model):
         permissions = (
             ('CAN_ENABLE_RULE', 'Can Enable rule'),
             ('CAN_DISABLE_RULE', 'Can Disable rule'),
+            ('CAN_SIMULATE_RULE', 'Can Simulate rule')
         )
         db_table = 'rule'
 
